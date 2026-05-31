@@ -1,0 +1,44 @@
+name: Track MARRA
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes (GitHub's minimum; may be delayed under load)
+  workflow_dispatch: {}    # allows manual "Run workflow" from the Actions tab
+
+# Avoid overlapping runs if one is slow
+concurrency:
+  group: track
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install "websockets>=12"
+
+      - name: Fetch latest position
+        env:
+          AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
+          AIS_WAIT_SECONDS: "90"   # keep each run well under the 5-min slot
+        run: python tracker.py
+
+      - name: Commit updated track
+        run: |
+          git config user.name "marra-tracker"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/track.json
+          if git diff --staged --quiet; then
+            echo "No new position to commit."
+          else
+            git commit -m "Update track $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
