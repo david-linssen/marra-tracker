@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Persistent aisstream listener for MARRA + a tiny HTTP server for the map.
+
+Holds the aisstream WebSocket open 24/7, filtered to MARRA's MMSI, and writes
+every fix into track.json (on a Fly volume): stationary fixes refresh the last
+point in place, and while moving the trail is capped to one point per
+MIN_APPEND_SECONDS. Serves the Leaflet map at / and the data at /track.json.
+"""
+import asyncio
+import json
+import math
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+import websockets
+from aiohttp import web
+
+MMSI = os.environ.get("AIS_MMSI", "244038459")
+API_KEY = os.environ.get("AISSTREAM_API_KEY", "")
+STREAM_URL = "wss://stream.aisstream.io/v0/stream"
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+TRACK_FILE = DATA_DIR / "track.json"
+INDEX_FILE = Path(__file__).parent / "index.html"
+MIN_MOVE_METERS = float(os.environ.get("AIS_MIN_MOVE_METERS", "50"))
+MIN_APPEND_SECONDS = float(os.environ.get("AIS_MIN_APPEND_SECONDS", "120"))
+
+_last_commit = None  # in-memory time of the last appended trail point
+
+
+def _read_track():
+    if TRACK_FILE.exists():
+        try:
+            return json.loads(TRACK_FILE.read_text() or "[]")
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def _write_track(track):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(DATA_DIR), suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        json.dump(track, f, indent=2)
+    os.replace(tmp, TRACK_FILE)  # atomic: HTTP readers never see a torn file
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def save_record(rec):
+    global _last_commit
+    track = _read_track()
+    now = datetime.fromisoformat(rec["time"])
+    if not track:
+        track.append(rec)
+        _last_commit = now
+        action = "appended"
+    else:
+        last = track[-1]
+        moved = _haversine_m(last["lat"], last["lon"], rec["lat"], rec["lon"])
+        too_soon = _last_commit is not None and (now - _last_commit).total_seconds() < MIN_APPEND_SECONDS
+        if moved < MIN_MOVE_METERS or too_soon:
+            # keep the committed position; just refresh live status + last-seen time
+            for k in ("time", "ais_time", "sog", "cog", "heading", "nav_status"):
+                last[k] = rec[k]
+            if rec.get("destination"):
+                last["destination"] = rec["destination"]
+            action = "refreshed"
+        else:
+            track.append(rec)
+            _last_commit = now
+            action = "appended"
+    _write_track(track)
+    return action, len(track)
+
+
+async def listener():
+    global _last_commit
+    track = _read_track()
+    if track:
+        try:
+            _last_commit = datetime.fromisoformat(track[-1]["time"])
+        except Exception:
+            _last_commit = None
+    sub = {
+        "APIKey": API_KEY,
+        "BoundingBoxes": [[[-90, -180], [90, 180]]],
+        "FiltersShipMMSI": [MMSI],
+        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+    }
+    static = {}
+    backoff = 1
+    while True:
+        try:
+            async with websockets.connect(STREAM_URL, ping_interval=20,
+                                          ping_timeout=20, close_timeout=5) as ws:
+                await ws.send(json.dumps(sub))
+                backoff = 1
+                print(f"[listener] connected, filtering MMSI {MMSI}", flush=True)
+                async for raw in ws:
+                    msg = json.loads(raw)
+                    mtype = msg.get("MessageType")
+                    meta = msg.get("MetaData", {})
+                    if mtype == "ShipStaticData":
+                        sd = msg["Message"]["ShipStaticData"]
+                        static["destination"] = (sd.get("Destination") or "").strip()
+                        continue
+                    if mtype == "PositionReport":
+                        pr = msg["Message"]["PositionReport"]
+                        sog, cog, hd = pr.get("Sog"), pr.get("Cog"), pr.get("TrueHeading")
+                        rec = {
+                            "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                            "ais_time": meta.get("time_utc"),
+                            "lat": pr["Latitude"],
+                            "lon": pr["Longitude"],
+                            "sog": None if sog is None or sog >= 102.3 else sog,
+                            "cog": None if cog is None or cog >= 360 else cog,
+                            "heading": None if hd is None or hd >= 511 else hd,
+                            "nav_status": pr.get("NavigationalStatus"),
+                            "name": (meta.get("ShipName") or static.get("name") or "MARRA").strip(),
+                            "destination": static.get("destination", ""),
+                        }
+                        action, n = save_record(rec)
+                        print(f"[listener] {action} ({n} pts): "
+                              f"{rec['lat']:.5f},{rec['lon']:.5f} sog={rec['sog']}", flush=True)
+        except Exception as e:
+            print(f"[listener] disconnected: {e!r} — reconnecting in {backoff}s", flush=True)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+
+async def h_index(request):
+    return web.FileResponse(INDEX_FILE)
+
+
+async def h_track(request):
+    return web.json_response(
+        _read_track(),
+        headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+async def h_health(request):
+    t = _read_track()
+    return web.json_response({"ok": True, "points": len(t),
+                              "last": t[-1]["time"] if t else None})
+
+
+async def _start_listener(app):
+    app["listener_task"] = asyncio.create_task(listener())
+
+
+async def _stop_listener(app):
+    app["listener_task"].cancel()
+
+
+def make_app():
+    app = web.Application()
+    app.router.add_get("/", h_index)
+    app.router.add_get("/track.json", h_track)
+    app.router.add_get("/health", h_health)
+    app.on_startup.append(_start_listener)
+    app.on_cleanup.append(_stop_listener)
+    return app
+
+
+if __name__ == "__main__":
+    web.run_app(make_app(), port=int(os.environ.get("PORT", "8080")))
