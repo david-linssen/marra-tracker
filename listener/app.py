@@ -29,6 +29,8 @@ MIN_APPEND_SECONDS = float(os.environ.get("AIS_MIN_APPEND_SECONDS", "120"))
 WATCHDOG_SECONDS = float(os.environ.get("AIS_WATCHDOG_SECONDS", "900"))
 # AIS position-report message types we accept. MARRA is Class B -> StandardClassBPositionReport.
 POSITION_TYPES = ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport")
+# A stationary period longer than this counts as a labelled "stop" (gets a place name).
+STOP_SECONDS = float(os.environ.get("AIS_STOP_HOURS", "6")) * 3600
 
 _last_commit = None  # in-memory time of the last appended trail point
 
@@ -63,6 +65,7 @@ def save_record(rec):
     global _last_commit
     track = _read_track()
     now = datetime.fromisoformat(rec["time"])
+    rec.setdefault("arrived", rec["time"])  # first moment seen at this position
     if not track:
         track.append(rec)
         _last_commit = now
@@ -72,7 +75,8 @@ def save_record(rec):
         moved = _haversine_m(last["lat"], last["lon"], rec["lat"], rec["lon"])
         too_soon = _last_commit is not None and (now - _last_commit).total_seconds() < MIN_APPEND_SECONDS
         if moved < MIN_MOVE_METERS or too_soon:
-            # keep the committed position; just refresh live status + last-seen time
+            # keep the committed position + arrival time; refresh live status + last-seen time
+            last.setdefault("arrived", last["time"])  # backfill legacy points
             for k in ("time", "ais_time", "sog", "cog", "heading", "nav_status"):
                 last[k] = rec[k]
             if rec.get("destination"):
@@ -84,6 +88,54 @@ def save_record(rec):
             action = "appended"
     _write_track(track)
     return action, len(track)
+
+
+async def _reverse_geocode(lat, lon):
+    """Nearest place name for a coordinate, via OpenStreetMap Nominatim (Dutch)."""
+    url = "https://nominatim.openstreetmap.org/reverse"
+    params = {"lat": str(lat), "lon": str(lon), "format": "json", "zoom": "12", "accept-language": "nl"}
+    headers = {"User-Agent": "marra-tracker/1.0 (personal sailing tracker)"}
+    try:
+        async with aiohttp.ClientSession(headers=headers,
+                                         timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(url, params=params) as r:
+                if r.status != 200:
+                    return None
+                d = await r.json()
+        a = d.get("address", {})
+        for k in ("harbour", "port", "town", "village", "city", "municipality", "suburb", "hamlet", "county"):
+            if a.get(k):
+                return a[k]
+        dn = d.get("display_name", "")
+        return dn.split(",")[0].strip() if dn else None
+    except Exception as e:
+        print(f"[listener] geocode failed: {e!r}", flush=True)
+        return None
+
+
+async def _geocode_stop_if_needed():
+    """If the last point has been stationary > STOP_SECONDS and has no place yet,
+    reverse-geocode it once and store the name (so each stop is geocoded a single time)."""
+    track = _read_track()
+    if not track:
+        return
+    last = track[-1]
+    arrived = last.get("arrived")
+    if not arrived or last.get("place"):
+        return
+    try:
+        dwell = (datetime.fromisoformat(last["time"]) - datetime.fromisoformat(arrived)).total_seconds()
+    except Exception:
+        return
+    if dwell < STOP_SECONDS:
+        return
+    place = await _reverse_geocode(last["lat"], last["lon"])
+    if place:
+        track = _read_track()  # re-read; the listener is the only writer, tail is unchanged
+        if track and not track[-1].get("place"):
+            track[-1]["place"] = place
+            _write_track(track)
+            print(f"[listener] stop geocoded: {place}", flush=True)
 
 
 async def listener():
@@ -147,6 +199,7 @@ async def listener():
                     action, n = save_record(rec)
                     print(f"[listener] {action} ({n} pts): {rec['lat']:.5f},{rec['lon']:.5f} "
                           f"sog={rec['sog']} type={mtype}", flush=True)
+                    await _geocode_stop_if_needed()
         except Exception as e:
             print(f"[listener] disconnected: {e!r} — reconnecting in {backoff}s", flush=True)
             await asyncio.sleep(backoff)

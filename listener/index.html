@@ -7,14 +7,15 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <style>
-    :root { --card: rgba(255,255,255,.94); --ink:#0b2238; --muted:#5a6b7b; --accent:#0a6ebd; }
+    :root { --card: rgba(255,255,255,.94); --ink:#0b2238; --muted:#5a6b7b; --accent:#0a6ebd; --stop:#c0392b; }
     * { box-sizing: border-box; }
     html, body { margin:0; height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color:var(--ink); }
     #map { position:absolute; inset:0; background:#aadaff; }
     #panel {
-      position:absolute; z-index:1000; top:12px; left:12px; width:280px; max-width:calc(100% - 24px);
+      position:absolute; z-index:1000; top:12px; left:12px; width:300px; max-width:calc(100% - 24px);
       background:var(--card); backdrop-filter: blur(6px); border-radius:14px;
       box-shadow:0 6px 24px rgba(0,0,0,.18); padding:14px 16px; line-height:1.35;
+      max-height:calc(100% - 24px); overflow-y:auto;
     }
     #panel h1 { margin:0 0 2px; font-size:20px; letter-spacing:.5px; }
     #panel .sub { color:var(--muted); font-size:12px; margin-bottom:10px; }
@@ -23,10 +24,23 @@
     .dot.moving { background:#1faa52; } .dot.anchor { background:#e0a106; } .dot.moored { background:#c64242; }
     dl { display:grid; grid-template-columns:auto 1fr; gap:4px 10px; margin:10px 0 0; font-size:13px; }
     dl dt { color:var(--muted); } dl dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
+    dl.wind { margin-top:4px; }
+    .warrow { display:inline-block; color:var(--accent); font-weight:700; transform-origin:center; }
+    .stops-h { margin:12px 0 6px; font-size:12px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:var(--muted); }
+    .stop-row { display:grid; grid-template-columns:20px 1fr; gap:8px; font-size:12px; padding:5px 0; border-top:1px solid #eef1f4; }
+    .badge { width:18px; height:18px; border-radius:50%; background:var(--stop); color:#fff; font-weight:700; font-size:11px; display:flex; align-items:center; justify-content:center; }
+    .stop-row .place { font-weight:600; }
+    .stop-row .when { font-variant-numeric:tabular-nums; }
+    .stop-row .dur { color:var(--muted); }
     #panel .foot { margin-top:10px; font-size:11px; color:var(--muted); }
     #panel .foot a { color:var(--muted); }
     .boat { font-size:26px; line-height:1; filter: drop-shadow(0 1px 2px rgba(0,0,0,.4)); transform-origin:center; }
     .empty { color:var(--muted); font-size:13px; margin-top:6px; }
+    .stop { width:27px; height:27px; border-radius:50% 50% 50% 4px; transform:rotate(45deg);
+      background:var(--stop); border:2px solid #fff; box-shadow:0 2px 5px rgba(0,0,0,.4);
+      display:flex; align-items:center; justify-content:center; }
+    .stop span { transform:rotate(-45deg); color:#fff; font-weight:700; font-size:13px; }
+    .leaflet-popup-content { margin:10px 12px; font-size:13px; line-height:1.45; }
     @media (max-width:520px) {
       #panel { top:auto; bottom:12px; left:12px; right:12px; width:auto; }
     }
@@ -39,8 +53,10 @@
     <div class="sub" id="vessel-sub">MMSI 244038459 · PI8022</div>
     <div class="status"><span class="dot" id="status-dot"></span><span id="status-text">Verbinden…</span></div>
     <dl id="facts"></dl>
+    <dl class="wind"><dt>Wind</dt><dd id="wind">—</dd><dt>Vlagen</dt><dd id="gust">—</dd></dl>
+    <div id="stops-wrap" hidden><div class="stops-h">⚓ Stops (&gt; 6 uur)</div><div id="stops"></div></div>
     <div class="empty" id="empty" hidden>Nog geen positie ontvangen — wachten op het eerste AIS-signaal.</div>
-    <div class="foot">Laatste verversing: <span id="checked">—</span> · AIS via <a href="https://aisstream.io" target="_blank" rel="noopener">aisstream.io</a></div>
+    <div class="foot">Laatste verversing: <span id="checked">—</span> · AIS via <a href="https://aisstream.io" target="_blank" rel="noopener">aisstream.io</a> · wind via <a href="https://open-meteo.com" target="_blank" rel="noopener">open-meteo</a></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -48,13 +64,14 @@
   <script>
     const TRACK_URL = "track.json";
     const REFRESH_MS = 5 * 60 * 1000;
+    const STOP_HOURS = 6;
 
     const map = L.map("map", { zoomControl: true }).setView([52.9, 5.1], 7);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18, attribution: "&copy; OpenStreetMap"
     }).addTo(map);
 
-    let routeLine = null, dots = null, boat = null, firstFit = true;
+    let routeLine = null, dots = null, boat = null, stopLayer = null, firstFit = true;
 
     const NAV = {
       0:"Onderweg (motor)", 1:"Voor anker", 2:"Niet manoeuvreerbaar", 3:"Beperkt manoeuvreerbaar",
@@ -71,9 +88,12 @@
       return {text: NAV[s] ?? "Onbekend", cls: statusClass(s)};
     }
 
+    const COMPASS=['N','NNO','NO','ONO','O','OZO','ZO','ZZO','Z','ZZW','ZW','WZW','W','WNW','NW','NNW'];
+    function compass(deg){ return COMPASS[Math.round(deg/22.5)%16]; }
+
     function toRad(d){ return d*Math.PI/180; }
     function haversineNm(a,b){
-      const R=3440.065; // nautical miles
+      const R=3440.065;
       const dLat=toRad(b.lat-a.lat), dLon=toRad(b.lon-a.lon);
       const s=Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLon/2)**2;
       return 2*R*Math.asin(Math.sqrt(s));
@@ -83,12 +103,45 @@
       const secs=Math.max(0,(Date.now()-new Date(iso).getTime())/1000);
       if(secs<90) return "zojuist";
       if(secs<3600) return Math.round(secs/60)+" min geleden";
-      if(secs<86400){ const h=Math.floor(secs/3600); return h+" uur"+(h>1?"":"")+" geleden"; }
+      if(secs<86400){ const h=Math.floor(secs/3600); return h+" uur geleden"; }
       const d=Math.floor(secs/86400); return d+" dag"+(d>1?"en":"")+" geleden";
     }
     function fmtLatLon(lat,lon){
       const ns=lat>=0?"N":"Z", ew=lon>=0?"O":"W";
       return Math.abs(lat).toFixed(4)+"° "+ns+", "+Math.abs(lon).toFixed(4)+"° "+ew;
+    }
+    function fmtStop(iso){ return new Date(iso).toLocaleString("nl-NL",{weekday:"short",day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}); }
+    function dur(a,b){ const end=b?new Date(b):new Date(); let m=Math.round((end-new Date(a))/60000); const h=Math.floor(m/60); m=m%60;
+      return (h>=24? Math.floor(h/24)+"d "+(h%24)+"u " : h+"u ")+m+"m"; }
+
+    // ---- wind (Open-Meteo, voor de actuele positie) ----
+    let lastWindKey = "";
+    async function updateWind(lat, lon){
+      const key = lat.toFixed(3)+","+lon.toFixed(3);
+      if(key === lastWindKey) return; // zelfde plek deze cyclus -> niet opnieuw ophalen
+      lastWindKey = key;
+      try{
+        const u = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=kn`;
+        const c = (await (await fetch(u)).json()).current;
+        const deg = c.wind_direction_10m;
+        document.getElementById("wind").innerHTML =
+          `<span class="warrow" style="transform:rotate(${deg+180}deg)">↑</span> ${Math.round(c.wind_speed_10m)} kn uit ${compass(deg)} (${Math.round(deg)}°)`;
+        document.getElementById("gust").textContent = c.wind_gusts_10m!=null ? Math.round(c.wind_gusts_10m)+" kn" : "—";
+      }catch(e){ lastWindKey = ""; } // bij fout volgende keer opnieuw proberen
+    }
+
+    // ---- stops (stilliggend > 6 uur), afgeleid uit arrived/time ----
+    function findStops(pts){
+      const out=[];
+      pts.forEach((p,i)=>{
+        if(!p.arrived) return;
+        const dwellH=(new Date(p.time)-new Date(p.arrived))/3600000;
+        if(dwellH>=STOP_HOURS){
+          out.push({ lat:p.lat, lon:p.lon, place:p.place||null,
+            arrived:p.arrived, departed:(i<pts.length-1)? p.time : null });
+        }
+      });
+      return out.map((s,idx)=>({...s, n:idx+1}));
     }
 
     function render(track){
@@ -121,6 +174,28 @@
         L.circleMarker([p.lat,p.lon], {radius:3, color:"#0a6ebd", weight:1, fillOpacity:.6})
       )).addTo(map);
 
+      // stops
+      const stops = findStops(pts);
+      if(stopLayer) stopLayer.remove();
+      stopLayer = L.layerGroup().addTo(map);
+      const stopsEl = document.getElementById("stops");
+      stopsEl.innerHTML = "";
+      stops.forEach(s=>{
+        const label = s.place ? `${s.n} · ${s.place}` : `Stop ${s.n}`;
+        const m = L.marker([s.lat,s.lon], {icon:L.divIcon({className:"", iconSize:[27,27], iconAnchor:[13,26],
+          html:`<div class="stop"><span>${s.n}</span></div>`})}).addTo(stopLayer);
+        const dep = s.departed ? fmtStop(s.departed) : "<i>nog hier</i>";
+        m.bindPopup(`<b>⚓ ${label}</b><br>Aankomst: ${fmtStop(s.arrived)}<br>Vertrek: ${dep}<br>Duur: ${dur(s.arrived,s.departed)}`);
+        m.bindTooltip(label, {permanent:true, direction:"top", offset:[0,-24]});
+        stopsEl.insertAdjacentHTML("beforeend",
+          `<div class="stop-row"><div class="badge">${s.n}</div>
+            <div>${s.place?`<div class="place">${s.place}</div>`:""}
+            <div class="when">${fmtStop(s.arrived)} → ${s.departed?fmtStop(s.departed):"nog hier"}</div>
+            <div class="dur">duur ${dur(s.arrived,s.departed)}</div></div></div>`);
+      });
+      document.getElementById("stops-wrap").hidden = stops.length===0;
+
+      // boat marker (boven de stops)
       const rot = (last.heading!=null ? last.heading : (last.cog!=null ? last.cog : 0));
       const icon = L.divIcon({ className:"", iconSize:[30,30], iconAnchor:[15,15],
         html:`<div class="boat" style="transform:rotate(${rot}deg)">⛵</div>` });
@@ -147,6 +222,8 @@
         <dt>Afgelegd</dt><dd>${dist.toFixed(1)} zm</dd>
         <dt>Punten</dt><dd>${pts.length}</dd>`;
 
+      updateWind(last.lat, last.lon);
+
       if(firstFit && latlngs.length){
         map.fitBounds(routeLine.getBounds(), {padding:[50,50], maxZoom:13});
         firstFit=false;
@@ -156,6 +233,7 @@
     async function refresh(){
       try{
         const res = await fetch(TRACK_URL + "?_=" + Date.now(), {cache:"no-store"});
+        lastWindKey = ""; // forceer windverversing bij elke refreshcyclus
         render(await res.json());
       }catch(e){
         document.getElementById("status-text").textContent="Kon gegevens niet laden";
