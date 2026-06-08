@@ -7,6 +7,7 @@ point in place, and while moving the trail is capped to one point per
 MIN_APPEND_SECONDS. Serves the Leaflet map at / and the data at /track.json.
 """
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -148,31 +149,28 @@ def _seed_history_if_needed():
     seed's window. Idempotent via a marker that records the applied seed size."""
     if not SEED_FILE.exists():
         return
+    data = SEED_FILE.read_bytes()
+    version = hashlib.md5(data).hexdigest()[:12]  # re-apply whenever the seed content changes
+    applied = SEED_MARKER.read_text().strip() if SEED_MARKER.exists() else ""
+    if applied == version:
+        return
     try:
-        seed = json.loads(SEED_FILE.read_text())
+        seed = json.loads(data)
     except Exception as e:
-        print(f"[seed] could not read seed: {e!r}", flush=True)
+        print(f"[seed] could not parse seed: {e!r}", flush=True)
         return
     if not seed:
         return
-    applied = -1
-    if SEED_MARKER.exists():
-        try:
-            applied = int(SEED_MARKER.read_text().strip())
-        except Exception:
-            applied = -1  # legacy/non-int marker -> treat as not-yet-applied
-    if applied >= len(seed):
-        return  # this seed (by size) is already applied
     current = _read_track()
     seed_last = seed[-1].get("time", "")
     tail = [p for p in current if p.get("time", "") > seed_last]  # live points beyond the seed
     merged = seed + tail
     _write_track(merged)
     try:
-        SEED_MARKER.write_text(str(len(seed)) + "\n")
+        SEED_MARKER.write_text(version + "\n")
     except Exception as e:
         print(f"[seed] could not write marker: {e!r}", flush=True)
-    print(f"[seed] applied seed ({len(seed)} pts) + {len(tail)} newer live = {len(merged)}", flush=True)
+    print(f"[seed] applied seed {version} ({len(seed)} pts) + {len(tail)} newer live = {len(merged)}", flush=True)
 
 
 async def listener():

@@ -134,11 +134,13 @@
     function findStops(pts){
       const out=[];
       pts.forEach((p,i)=>{
-        if(!p.arrived) return;
-        const dwellH=(new Date(p.time)-new Date(p.arrived))/3600000;
-        if(dwellH>=STOP_HOURS){
+        const isStart = p.start===true; // geforceerd vertrekpunt (telt als stop ook al < 6u)
+        const dwellH = p.arrived ? (new Date(p.time)-new Date(p.arrived))/3600000 : 0;
+        if(isStart || (p.arrived && dwellH>=STOP_HOURS)){
           out.push({ lat:p.lat, lon:p.lon, place:p.place||null,
-            arrived:p.arrived, departed:(i<pts.length-1)? p.time : null });
+            arrived: isStart ? null : p.arrived,
+            departed: isStart ? p.time : (i<pts.length-1 ? p.time : null),
+            start: isStart });
         }
       });
       return out.map((s,idx)=>({...s, n:idx+1}));
@@ -184,14 +186,24 @@
         const label = s.place ? `${s.n} · ${s.place}` : `Stop ${s.n}`;
         const m = L.marker([s.lat,s.lon], {icon:L.divIcon({className:"", iconSize:[27,27], iconAnchor:[13,26],
           html:`<div class="stop"><span>${s.n}</span></div>`})}).addTo(stopLayer);
-        const dep = s.departed ? fmtStop(s.departed) : "<i>nog hier</i>";
-        m.bindPopup(`<b>⚓ ${label}</b><br>Aankomst: ${fmtStop(s.arrived)}<br>Vertrek: ${dep}<br>Duur: ${dur(s.arrived,s.departed)}`);
+        let popup, whenLine, durLine;
+        if(s.start){
+          popup = `<b>⚓ ${label}</b><br>Vertrek: ${fmtStop(s.departed)}<br><i>vertrekpunt</i>`;
+          whenLine = `Vertrek ${fmtStop(s.departed)}`;
+          durLine = "vertrekpunt";
+        } else {
+          const dep = s.departed ? fmtStop(s.departed) : "<i>nog hier</i>";
+          popup = `<b>⚓ ${label}</b><br>Aankomst: ${fmtStop(s.arrived)}<br>Vertrek: ${dep}<br>Duur: ${dur(s.arrived,s.departed)}`;
+          whenLine = `${fmtStop(s.arrived)} → ${s.departed?fmtStop(s.departed):"nog hier"}`;
+          durLine = `duur ${dur(s.arrived,s.departed)}`;
+        }
+        m.bindPopup(popup);
         m.bindTooltip(label, {permanent:true, direction:"top", offset:[0,-24]});
         stopsEl.insertAdjacentHTML("beforeend",
           `<div class="stop-row"><div class="badge">${s.n}</div>
             <div>${s.place?`<div class="place">${s.place}</div>`:""}
-            <div class="when">${fmtStop(s.arrived)} → ${s.departed?fmtStop(s.departed):"nog hier"}</div>
-            <div class="dur">duur ${dur(s.arrived,s.departed)}</div></div></div>`);
+            <div class="when">${whenLine}</div>
+            <div class="dur">${durLine}</div></div></div>`);
       });
       document.getElementById("stops-wrap").hidden = stops.length===0;
 

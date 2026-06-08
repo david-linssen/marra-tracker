@@ -10,7 +10,9 @@
     "nav_status": null,
     "name": "MARRA",
     "destination": "",
-    "arrived": "2026-05-26T07:10:00+00:00"
+    "arrived": "2026-05-26T07:10:00+00:00",
+    "place": "Lemmer",
+    "start": true
   },
   {
     "time": "2026-05-26T07:41:02+00:00",
