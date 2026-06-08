@@ -143,23 +143,36 @@ async def _geocode_stop_if_needed():
 
 
 def _seed_history_if_needed():
-    """On first boot, replace the volume's track with the baked-in historical backfill
-    (a superset of any live points captured so far). Runs once, guarded by a marker."""
-    if SEED_MARKER.exists() or not SEED_FILE.exists():
+    """Apply the baked-in historical backfill to the volume. Re-applies when a larger
+    seed ships (version = point count), preserving any live points captured beyond the
+    seed's window. Idempotent via a marker that records the applied seed size."""
+    if not SEED_FILE.exists():
         return
     try:
         seed = json.loads(SEED_FILE.read_text())
     except Exception as e:
         print(f"[seed] could not read seed: {e!r}", flush=True)
         return
+    if not seed:
+        return
+    applied = -1
+    if SEED_MARKER.exists():
+        try:
+            applied = int(SEED_MARKER.read_text().strip())
+        except Exception:
+            applied = -1  # legacy/non-int marker -> treat as not-yet-applied
+    if applied >= len(seed):
+        return  # this seed (by size) is already applied
     current = _read_track()
-    if seed and len(seed) >= len(current):
-        _write_track(seed)
-        print(f"[seed] imported {len(seed)} historical points (was {len(current)})", flush=True)
+    seed_last = seed[-1].get("time", "")
+    tail = [p for p in current if p.get("time", "") > seed_last]  # live points beyond the seed
+    merged = seed + tail
+    _write_track(merged)
     try:
-        SEED_MARKER.write_text("done\n")
+        SEED_MARKER.write_text(str(len(seed)) + "\n")
     except Exception as e:
         print(f"[seed] could not write marker: {e!r}", flush=True)
+    print(f"[seed] applied seed ({len(seed)} pts) + {len(tail)} newer live = {len(merged)}", flush=True)
 
 
 async def listener():
