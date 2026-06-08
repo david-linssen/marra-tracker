@@ -42,7 +42,7 @@
     .stop span { transform:rotate(-45deg); color:#fff; font-weight:700; font-size:13px; }
     .leaflet-popup-content { margin:10px 12px; font-size:13px; line-height:1.45; }
     @media (max-width:520px) {
-      #panel { top:auto; bottom:12px; left:12px; right:12px; width:auto; }
+      #panel { top:auto; bottom:12px; left:12px; right:12px; width:auto; max-height:45vh; }
     }
   </style>
 </head>
@@ -237,7 +237,10 @@
       updateWind(last.lat, last.lon);
 
       if(firstFit && latlngs.length){
-        map.fitBounds(routeLine.getBounds(), {padding:[50,50], maxZoom:13});
+        const mobile = window.innerWidth <= 520;
+        map.fitBounds(routeLine.getBounds(), mobile
+          ? {paddingTopLeft:[30,30], paddingBottomRight:[30, Math.round(window.innerHeight*0.45)+24], maxZoom:13}
+          : {padding:[50,50], maxZoom:13});
         firstFit=false;
       }
     }
