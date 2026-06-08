@@ -44,8 +44,11 @@ async def fetch_position(api_key: str):
         "APIKey": api_key,
         "BoundingBoxes": [[[-90, -180], [90, 180]]],  # whole world; filtered by MMSI below
         "FiltersShipMMSI": [MMSI],
-        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+        # No FilterMessageTypes: MARRA is Class B (StandardClassBPositionReport), which
+        # "PositionReport" (Class A only) would exclude. Filtered to one MMSI volume is tiny.
     }
+    # Class A + Class B position-report message types.
+    position_types = ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport")
     static = {}
     loop = asyncio.get_event_loop()
     deadline = loop.time() + WAIT_SECONDS
@@ -62,26 +65,29 @@ async def fetch_position(api_key: str):
             msg = json.loads(raw)
             mtype = msg.get("MessageType")
             meta = msg.get("MetaData", {})
+            message = msg.get("Message", {})
             if mtype == "ShipStaticData":
-                sd = msg["Message"]["ShipStaticData"]
+                sd = message.get("ShipStaticData", {})
                 static["destination"] = (sd.get("Destination") or "").strip()
-                static["name"] = (meta.get("ShipName") or "").strip()
                 continue
-            if mtype == "PositionReport":
-                pr = msg["Message"]["PositionReport"]
+            if mtype in position_types:
+                pr = message.get(mtype, {})
+                lat, lon = pr.get("Latitude"), pr.get("Longitude")
+                if lat is None or lon is None:
+                    continue
                 sog = pr.get("Sog")
                 cog = pr.get("Cog")
                 heading = pr.get("TrueHeading")
                 return {
                     "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "ais_time": meta.get("time_utc"),
-                    "lat": pr["Latitude"],
-                    "lon": pr["Longitude"],
+                    "lat": lat,
+                    "lon": lon,
                     "sog": None if sog is None or sog >= 102.3 else sog,
                     "cog": None if cog is None or cog >= 360 else cog,
                     "heading": None if heading is None or heading >= 511 else heading,
-                    "nav_status": pr.get("NavigationalStatus"),
-                    "name": (meta.get("ShipName") or static.get("name") or "MARRA").strip(),
+                    "nav_status": pr.get("NavigationalStatus"),  # absent for Class B -> None
+                    "name": (meta.get("ShipName") or "MARRA").strip(),
                     "destination": static.get("destination", ""),
                 }
 

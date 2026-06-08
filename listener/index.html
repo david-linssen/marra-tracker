@@ -62,6 +62,14 @@
       8:"Onderweg (zeilend)", 11:"Gesleept", 12:"Sleept", 15:"—"
     };
     function statusClass(s){ if(s===1) return "anchor"; if(s===5||s===6) return "moored"; if(s===0||s===8||s===7) return "moving"; return ""; }
+    function statusInfo(p){
+      let s=p.nav_status;
+      if(s==null || s===15){ // Class B carries no nav status -> infer from speed
+        if(p.sog!=null && p.sog>=0.5) return {text:"Onderweg", cls:"moving"};
+        return {text:"Stilliggend", cls:""};
+      }
+      return {text: NAV[s] ?? "Onbekend", cls: statusClass(s)};
+    }
 
     function toRad(d){ return d*Math.PI/180; }
     function haversineNm(a,b){
@@ -120,14 +128,15 @@
       boat = L.marker([last.lat,last.lon], {icon}).addTo(map);
       boat.bindPopup(
         `<b>MARRA</b><br>${fmtLatLon(last.lat,last.lon)}<br>` +
-        `${NAV[last.nav_status] ?? "—"}<br>` +
+        `${statusInfo(last).text}<br>` +
         (last.sog!=null ? `${last.sog.toFixed(1)} kn` : "—") +
         (last.cog!=null ? ` · koers ${Math.round(last.cog)}°` : "") +
         `<br><small>${ago(last.time)}</small>`
       );
 
-      document.getElementById("status-text").textContent = NAV[last.nav_status] ?? "Onbekend";
-      document.getElementById("status-dot").className = "dot " + statusClass(last.nav_status);
+      const si = statusInfo(last);
+      document.getElementById("status-text").textContent = si.text;
+      document.getElementById("status-dot").className = "dot " + si.cls;
 
       facts.innerHTML = `
         <dt>Bijgewerkt</dt><dd title="${last.time}">${ago(last.time)}</dd>

@@ -25,6 +25,10 @@ TRACK_FILE = DATA_DIR / "track.json"
 INDEX_FILE = Path(__file__).parent / "index.html"
 MIN_MOVE_METERS = float(os.environ.get("AIS_MIN_MOVE_METERS", "50"))
 MIN_APPEND_SECONDS = float(os.environ.get("AIS_MIN_APPEND_SECONDS", "120"))
+# If no message arrives for this long, force a reconnect (guards against a stale/zombie socket).
+WATCHDOG_SECONDS = float(os.environ.get("AIS_WATCHDOG_SECONDS", "900"))
+# AIS position-report message types we accept. MARRA is Class B -> StandardClassBPositionReport.
+POSITION_TYPES = ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport")
 
 _last_commit = None  # in-memory time of the last appended trail point
 
@@ -94,7 +98,8 @@ async def listener():
         "APIKey": API_KEY,
         "BoundingBoxes": [[[-90, -180], [90, 180]]],
         "FiltersShipMMSI": [MMSI],
-        "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
+        # No FilterMessageTypes: MARRA is Class B, whose reports are NOT "PositionReport".
+        # Filtered to one MMSI the volume is tiny, so just accept every type she sends.
     }
     static = {}
     backoff = 1
@@ -104,33 +109,44 @@ async def listener():
                                           ping_timeout=20, close_timeout=5) as ws:
                 await ws.send(json.dumps(sub))
                 backoff = 1
-                print(f"[listener] connected, filtering MMSI {MMSI}", flush=True)
-                async for raw in ws:
+                print(f"[listener] connected, listening for MMSI {MMSI}", flush=True)
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=WATCHDOG_SECONDS)
+                    except asyncio.TimeoutError:
+                        print(f"[listener] silent for {WATCHDOG_SECONDS:.0f}s — reconnecting", flush=True)
+                        break  # re-establish the subscription
                     msg = json.loads(raw)
                     mtype = msg.get("MessageType")
                     meta = msg.get("MetaData", {})
-                    if mtype == "ShipStaticData":
-                        sd = msg["Message"]["ShipStaticData"]
-                        static["destination"] = (sd.get("Destination") or "").strip()
+                    message = msg.get("Message", {})
+                    if mtype == "ShipStaticData":  # Class A static carries a destination
+                        dest = (message.get("ShipStaticData", {}).get("Destination") or "").strip()
+                        if dest:
+                            static["destination"] = dest
                         continue
-                    if mtype == "PositionReport":
-                        pr = msg["Message"]["PositionReport"]
-                        sog, cog, hd = pr.get("Sog"), pr.get("Cog"), pr.get("TrueHeading")
-                        rec = {
-                            "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                            "ais_time": meta.get("time_utc"),
-                            "lat": pr["Latitude"],
-                            "lon": pr["Longitude"],
-                            "sog": None if sog is None or sog >= 102.3 else sog,
-                            "cog": None if cog is None or cog >= 360 else cog,
-                            "heading": None if hd is None or hd >= 511 else hd,
-                            "nav_status": pr.get("NavigationalStatus"),
-                            "name": (meta.get("ShipName") or static.get("name") or "MARRA").strip(),
-                            "destination": static.get("destination", ""),
-                        }
-                        action, n = save_record(rec)
-                        print(f"[listener] {action} ({n} pts): "
-                              f"{rec['lat']:.5f},{rec['lon']:.5f} sog={rec['sog']}", flush=True)
+                    if mtype not in POSITION_TYPES:
+                        continue
+                    pr = message.get(mtype, {})
+                    lat, lon = pr.get("Latitude"), pr.get("Longitude")
+                    if lat is None or lon is None:
+                        continue
+                    sog, cog, hd = pr.get("Sog"), pr.get("Cog"), pr.get("TrueHeading")
+                    rec = {
+                        "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "ais_time": meta.get("time_utc"),
+                        "lat": lat,
+                        "lon": lon,
+                        "sog": None if sog is None or sog >= 102.3 else sog,
+                        "cog": None if cog is None or cog >= 360 else cog,
+                        "heading": None if hd is None or hd >= 511 else hd,
+                        "nav_status": pr.get("NavigationalStatus"),  # absent for Class B -> None
+                        "name": (meta.get("ShipName") or "MARRA").strip(),
+                        "destination": static.get("destination", ""),
+                    }
+                    action, n = save_record(rec)
+                    print(f"[listener] {action} ({n} pts): {rec['lat']:.5f},{rec['lon']:.5f} "
+                          f"sog={rec['sog']} type={mtype}", flush=True)
         except Exception as e:
             print(f"[listener] disconnected: {e!r} — reconnecting in {backoff}s", flush=True)
             await asyncio.sleep(backoff)
