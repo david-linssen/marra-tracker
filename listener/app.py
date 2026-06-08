@@ -14,6 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+import aiohttp
 import websockets
 from aiohttp import web
 
@@ -31,6 +32,9 @@ WATCHDOG_SECONDS = float(os.environ.get("AIS_WATCHDOG_SECONDS", "900"))
 POSITION_TYPES = ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport")
 # A stationary period longer than this counts as a labelled "stop" (gets a place name).
 STOP_SECONDS = float(os.environ.get("AIS_STOP_HOURS", "6")) * 3600
+# One-time historical backfill baked into the image; applied to the volume on first boot.
+SEED_FILE = Path(__file__).parent / "seed_track.json"
+SEED_MARKER = DATA_DIR / ".history_imported"
 
 _last_commit = None  # in-memory time of the last appended trail point
 
@@ -138,8 +142,29 @@ async def _geocode_stop_if_needed():
             print(f"[listener] stop geocoded: {place}", flush=True)
 
 
+def _seed_history_if_needed():
+    """On first boot, replace the volume's track with the baked-in historical backfill
+    (a superset of any live points captured so far). Runs once, guarded by a marker."""
+    if SEED_MARKER.exists() or not SEED_FILE.exists():
+        return
+    try:
+        seed = json.loads(SEED_FILE.read_text())
+    except Exception as e:
+        print(f"[seed] could not read seed: {e!r}", flush=True)
+        return
+    current = _read_track()
+    if seed and len(seed) >= len(current):
+        _write_track(seed)
+        print(f"[seed] imported {len(seed)} historical points (was {len(current)})", flush=True)
+    try:
+        SEED_MARKER.write_text("done\n")
+    except Exception as e:
+        print(f"[seed] could not write marker: {e!r}", flush=True)
+
+
 async def listener():
     global _last_commit
+    _seed_history_if_needed()
     track = _read_track()
     if track:
         try:
