@@ -130,6 +130,20 @@
       }catch(e){ lastWindKey = ""; } // bij fout volgende keer opnieuw proberen
     }
 
+    // ---- locatienaam huidige positie (Nominatim, gecachet op positie) ----
+    let placeKey = "", placeText = "";
+    async function updatePlace(lat, lon){
+      const key = lat.toFixed(3)+","+lon.toFixed(3); // ~100 m
+      if(key === placeKey) return; // zelfde plek -> niet opnieuw geocoden
+      placeKey = key;
+      try{
+        const a = (await (await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=12&accept-language=nl`)).json()).address || {};
+        placeText = a.harbour||a.port||a.town||a.village||a.city||a.municipality||a.suburb||a.hamlet||a.county||"—";
+        const el = document.getElementById("loc-place");
+        if(el) el.textContent = placeText;
+      }catch(e){ placeKey = ""; } // bij fout volgende keer opnieuw proberen
+    }
+
     // ---- stops (stilliggend > 6 uur), afgeleid uit arrived/time ----
     function findStops(pts){
       const out=[];
@@ -228,6 +242,7 @@
       facts.innerHTML = `
         <dt>Bijgewerkt</dt><dd title="${last.time}">${ago(last.time)}</dd>
         <dt>Positie</dt><dd>${fmtLatLon(last.lat,last.lon)}</dd>
+        <dt>Locatie</dt><dd id="loc-place">${placeText||"…"}</dd>
         <dt>Snelheid</dt><dd>${last.sog!=null ? last.sog.toFixed(1)+" kn" : "—"}</dd>
         <dt>Koers</dt><dd>${last.cog!=null ? Math.round(last.cog)+"°" : "—"}</dd>
         ${last.destination ? `<dt>Bestemming</dt><dd>${last.destination}</dd>` : ""}
@@ -235,8 +250,10 @@
         <dt>Punten</dt><dd>${pts.length}</dd>`;
 
       updateWind(last.lat, last.lon);
+      updatePlace(last.lat, last.lon);
 
       if(firstFit && latlngs.length){
+        map.invalidateSize(); // her-meet de container zodat fitBounds de juiste zoom kiest
         const mobile = window.innerWidth <= 520;
         map.fitBounds(routeLine.getBounds(), mobile
           ? {paddingTopLeft:[30,30], paddingBottomRight:[30, Math.round(window.innerHeight*0.45)+24], maxZoom:13}
