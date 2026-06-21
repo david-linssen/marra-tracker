@@ -74,7 +74,22 @@
       maxZoom: 18, attribution: "&copy; OpenStreetMap"
     }).addTo(map);
 
-    let routeLine = null, dots = null, boat = null, stopLayer = null, firstFit = true;
+    let routeLine = null, dots = null, boat = null, stopLayer = null, firstFit = true, needFit = false;
+
+    // Pas de kaart op de hele route — maar pas zodra de container echt gemeten is,
+    // anders maxt fitBounds de zoom (container 0x0 tijdens laden) en valt de route buiten beeld.
+    function tryFit(){
+      if(!needFit || !routeLine) return;
+      map.invalidateSize();
+      if(map.getSize().x === 0){ setTimeout(tryFit, 100); return; }
+      const mobile = window.innerWidth <= 520;
+      map.fitBounds(routeLine.getBounds(), mobile
+        ? {paddingTopLeft:[30,30], paddingBottomRight:[30, Math.round(window.innerHeight*0.45)+24], maxZoom:13}
+        : {padding:[50,50], maxZoom:13});
+      needFit = false;
+    }
+    window.addEventListener("load", tryFit);
+    window.addEventListener("resize", tryFit); // vangt late layout; guard voorkomt herkadreren na de eerste fit
 
     const NAV = {
       0:"Onderweg (motor)", 1:"Voor anker", 2:"Niet manoeuvreerbaar", 3:"Beperkt manoeuvreerbaar",
@@ -256,12 +271,9 @@
       updatePlace(last.lat, last.lon);
 
       if(firstFit && latlngs.length){
-        map.invalidateSize(); // her-meet de container zodat fitBounds de juiste zoom kiest
-        const mobile = window.innerWidth <= 520;
-        map.fitBounds(routeLine.getBounds(), mobile
-          ? {paddingTopLeft:[30,30], paddingBottomRight:[30, Math.round(window.innerHeight*0.45)+24], maxZoom:13}
-          : {padding:[50,50], maxZoom:13});
         firstFit=false;
+        needFit=true;
+        tryFit();
       }
     }
 
