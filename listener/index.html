@@ -34,6 +34,8 @@
     .stop-row .dur { color:var(--muted); }
     #panel .foot { margin-top:10px; font-size:11px; color:var(--muted); }
     #panel .foot a { color:var(--muted); }
+    #panel .note { margin-top:10px; font-size:11px; line-height:1.45; color:var(--muted); background:rgba(10,110,189,.08); border-radius:8px; padding:7px 9px; }
+    #panel .note a { color:var(--accent); }
     .boat { font-size:26px; line-height:1; filter: drop-shadow(0 1px 2px rgba(0,0,0,.4)); transform-origin:center; }
     .empty { color:var(--muted); font-size:13px; margin-top:6px; }
     .stop { width:27px; height:27px; border-radius:50% 50% 50% 4px; transform:rotate(45deg);
@@ -56,6 +58,7 @@
     <dl class="wind"><dt>Wind</dt><dd id="wind">—</dd><dt>Vlagen</dt><dd id="gust">—</dd></dl>
     <div id="stops-wrap" hidden><div class="stops-h">⚓ Stops (&gt; 6 uur)</div><div id="stops"></div></div>
     <div class="empty" id="empty" hidden>Nog geen positie ontvangen — wachten op het eerste AIS-signaal.</div>
+    <div class="note">ℹ️ Posities komen binnen via gratis terrestrische AIS (<a href="https://aisstream.io" target="_blank" rel="noopener">aisstream.io</a>). Buiten het bereik van een ontvanger — bijv. op open zee, of in een haven met de AIS uit — kan het spoor gaten vertonen of tijdelijk stilstaan. De laatste positie is dan niet per se de actuele.</div>
     <div class="foot">Laatste verversing: <span id="checked">—</span> · AIS via <a href="https://aisstream.io" target="_blank" rel="noopener">aisstream.io</a> · wind via <a href="https://open-meteo.com" target="_blank" rel="noopener">open-meteo</a></div>
   </div>
 
