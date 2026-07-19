@@ -243,7 +243,8 @@ async def listener():
 
 
 async def h_index(request):
-    return web.FileResponse(INDEX_FILE)
+    # no-cache => de browser revalideert altijd, zodat familie frontend-updates direct krijgt
+    return web.FileResponse(INDEX_FILE, headers={"Cache-Control": "no-cache"})
 
 
 async def h_track(request):

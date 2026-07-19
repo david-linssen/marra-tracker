@@ -164,14 +164,22 @@
 
     // ---- stops (stilliggend > 6 uur), afgeleid uit arrived/time ----
     function findStops(pts){
+      const now = Date.now();
       const out=[];
       pts.forEach((p,i)=>{
         const isStart = p.start===true; // geforceerd vertrekpunt (telt als stop ook al < 6u)
-        const dwellH = p.arrived ? (new Date(p.time)-new Date(p.arrived))/3600000 : 0;
-        if(isStart || (p.arrived && dwellH>=STOP_HOURS)){
-          out.push({ lat:p.lat, lon:p.lon, place:p.place||null,
+        const isLast = i === pts.length-1;
+        let dwellH = p.arrived ? (new Date(p.time)-new Date(p.arrived))/3600000 : 0;
+        // Huidige ligplaats: ligt ze stil en zwijgt de AIS, tel de duur op de klok door —
+        // anders haalt een stop waarbij de transponder na aankomst uitgaat nooit de 6u-drempel.
+        if(isLast && p.arrived && (p.sog==null || p.sog < 0.5)){
+          dwellH = Math.max(dwellH, (now - new Date(p.arrived))/3600000);
+        }
+        if(isStart || dwellH>=STOP_HOURS){
+          out.push({ lat:p.lat, lon:p.lon,
+            place: p.place || (isLast && placeText && placeText!=="—" ? placeText : null),
             arrived: isStart ? null : p.arrived,
-            departed: isStart ? p.time : (i<pts.length-1 ? p.time : null),
+            departed: isStart ? p.time : (isLast ? null : p.time),
             start: isStart });
         }
       });
