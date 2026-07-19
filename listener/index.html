@@ -74,7 +74,7 @@
       maxZoom: 18, attribution: "&copy; OpenStreetMap"
     }).addTo(map);
 
-    let routeLine = null, dots = null, boat = null, stopLayer = null, firstFit = true, needFit = false;
+    let routeLine = null, dots = null, boat = null, stopLayer = null, firstFit = true, needFit = false, lastTrack = null;
 
     // Pas de kaart op de hele route — maar pas zodra de container echt gemeten is,
     // anders maxt fitBounds de zoom (container 0x0 tijdens laden) en valt de route buiten beeld.
@@ -155,10 +155,11 @@
       if(key === placeKey) return; // zelfde plek -> niet opnieuw geocoden
       placeKey = key;
       try{
-        const a = (await (await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=12&accept-language=nl`)).json()).address || {};
+        const a = (await (await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=14&accept-language=nl`)).json()).address || {};
         placeText = a.harbour||a.port||a.town||a.village||a.city||a.municipality||a.suburb||a.hamlet||a.county||"—";
         const el = document.getElementById("loc-place");
         if(el) el.textContent = placeText;
+        if(lastTrack) render(lastTrack); // herteken de stops-lijst zodat de huidige stop meteen z'n naam krijgt
       }catch(e){ placeKey = ""; } // bij fout volgende keer opnieuw proberen
     }
 
@@ -187,6 +188,7 @@
     }
 
     function render(track){
+      lastTrack = track; // bewaard zodat updatePlace de stops kan herrenderen zodra de naam binnen is
       document.getElementById("checked").textContent =
         new Date().toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"});
 

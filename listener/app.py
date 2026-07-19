@@ -98,7 +98,7 @@ def save_record(rec):
 async def _reverse_geocode(lat, lon):
     """Nearest place name for a coordinate, via OpenStreetMap Nominatim (Dutch)."""
     url = "https://nominatim.openstreetmap.org/reverse"
-    params = {"lat": str(lat), "lon": str(lon), "format": "json", "zoom": "12", "accept-language": "nl"}
+    params = {"lat": str(lat), "lon": str(lon), "format": "json", "zoom": "14", "accept-language": "nl"}
     headers = {"User-Agent": "marra-tracker/1.0 (personal sailing tracker)"}
     try:
         async with aiohttp.ClientSession(headers=headers,
