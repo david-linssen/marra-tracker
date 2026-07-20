@@ -42,6 +42,11 @@
       background:var(--stop); border:2px solid #fff; box-shadow:0 2px 5px rgba(0,0,0,.4);
       display:flex; align-items:center; justify-content:center; }
     .stop span { transform:rotate(-45deg); color:#fff; font-weight:700; font-size:13px; }
+    .haven { width:21px; height:21px; border-radius:50%; background:#0e7c86; color:#fff;
+      border:2px solid #fff; box-shadow:0 1px 3px rgba(0,0,0,.4);
+      display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; }
+    .haven.anker { background:#3a9ad9; }
+    .leaflet-control-layers { font-size:12px; }
     .leaflet-popup-content { margin:10px 12px; font-size:13px; line-height:1.45; }
     @media (max-width:520px) {
       #panel { top:auto; bottom:12px; left:12px; right:12px; width:auto; max-height:45vh; }
@@ -58,7 +63,7 @@
     <dl class="wind"><dt>Wind</dt><dd id="wind">—</dd><dt>Vlagen</dt><dd id="gust">—</dd></dl>
     <div id="stops-wrap" hidden><div class="stops-h">⚓ Stops (&gt; 6 uur)</div><div id="stops"></div></div>
     <div class="empty" id="empty" hidden>Nog geen positie ontvangen — wachten op het eerste AIS-signaal.</div>
-    <div class="note">ℹ️ Posities komen binnen via gratis terrestrische AIS (<a href="https://aisstream.io" target="_blank" rel="noopener">aisstream.io</a>). Buiten het bereik van een ontvanger — bijv. op open zee, of in een haven met de AIS uit — kan het spoor gaten vertonen of tijdelijk stilstaan. De laatste positie is dan niet per se de actuele.</div>
+    <div class="note">ℹ️ Posities komen binnen via gratis terrestrische AIS (<a href="https://aisstream.io" target="_blank" rel="noopener">aisstream.io</a>). Buiten het bereik van een ontvanger — bijv. op open zee, of in een haven met de AIS uit — kan het spoor gaten vertonen of tijdelijk stilstaan. De laatste positie is dan niet per se de actuele. De haven-laag komt uit het Polarsteps-logboek van de bemanning en markeert waar MARRA lag terwijl zij aan boord waren — niet per se haar actuele positie.</div>
     <div class="foot">Laatste verversing: <span id="checked">—</span> · AIS via <a href="https://aisstream.io" target="_blank" rel="noopener">aisstream.io</a> · wind via <a href="https://open-meteo.com" target="_blank" rel="noopener">open-meteo</a></div>
   </div>
 
@@ -73,6 +78,23 @@
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18, attribution: "&copy; OpenStreetMap"
     }).addTo(map);
+
+    // ---- Polarsteps-havens: aparte, uitschakelbare laag (bemanning's eigen logboek) ----
+    const havenLayer = L.layerGroup();
+    fetch("polarsteps.json?_=" + Date.now(), {cache:"no-store"}).then(r=>r.json()).then(havens=>{
+      const f = iso => new Date(iso).toLocaleDateString("nl-NL",{day:"numeric",month:"short"});
+      havens.forEach(h=>{
+        const anker = h.kind === "ankerplek";
+        const m = L.marker([h.lat, h.lon], {icon: L.divIcon({className:"", iconSize:[21,21], iconAnchor:[11,11],
+          html:`<div class="haven${anker?" anker":""}">${h.n}</div>`})});
+        const when = h.arrived===h.departed ? f(h.arrived) : `${f(h.arrived)} – ${f(h.departed)}`;
+        m.bindPopup(`<b>⚓ ${h.n}. ${h.name}</b><br>${when}${anker?" · ankerplek":""}<br><small>Polarsteps-logboek — geldt zolang de bemanning aan boord is</small>`);
+        m.bindTooltip(h.name, {direction:"top", offset:[0,-10]});
+        m.addTo(havenLayer);
+      });
+      havenLayer.addTo(map);
+      L.control.layers(null, {"⚓ Havens · Polarsteps (bemanning aan boord)": havenLayer}, {collapsed:false, position:"topright"}).addTo(map);
+    }).catch(()=>{});
 
     let routeLine = null, dots = null, boat = null, stopLayer = null, firstFit = true, needFit = false, lastTrack = null;
 

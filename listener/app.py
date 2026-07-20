@@ -36,6 +36,8 @@ STOP_SECONDS = float(os.environ.get("AIS_STOP_HOURS", "6")) * 3600
 # One-time historical backfill baked into the image; applied to the volume on first boot.
 SEED_FILE = Path(__file__).parent / "seed_track.json"
 SEED_MARKER = DATA_DIR / ".history_imported"
+# Curated harbours from the crew's Polarsteps trip (static snapshot, refreshed on request).
+POLAR_FILE = Path(__file__).parent / "polarsteps_stops.json"
 
 _last_commit = None  # in-memory time of the last appended trail point
 
@@ -260,6 +262,11 @@ async def h_health(request):
                               "last": t[-1]["time"] if t else None})
 
 
+async def h_polar(request):
+    return web.FileResponse(POLAR_FILE, headers={"Cache-Control": "no-cache",
+                                                 "Access-Control-Allow-Origin": "*"})
+
+
 async def _start_listener(app):
     app["listener_task"] = asyncio.create_task(listener())
 
@@ -272,6 +279,7 @@ def make_app():
     app = web.Application()
     app.router.add_get("/", h_index)
     app.router.add_get("/track.json", h_track)
+    app.router.add_get("/polarsteps.json", h_polar)
     app.router.add_get("/health", h_health)
     app.on_startup.append(_start_listener)
     app.on_cleanup.append(_stop_listener)
